@@ -7,8 +7,9 @@
 #tools for network telemetry and monitoring
 
 FROM debian:bullseye-slim as build-stage
+
 # We don't want man pages
-COPY ci/dpkg.cfg.d/excludes /etc/dpkg/dpkg.cfg.d/excludes
+COPY ./pmacct/ci/dpkg.cfg.d/excludes /etc/dpkg/dpkg.cfg.d/excludes
 # This is not the runtime/final image:
 #   * we keep some installation steps in different layers to improve cachability
 #   * this only covers build deps
@@ -40,18 +41,48 @@ RUN apt-get update && \
     pkg-config \
     sudo \
     wget \
-    zlib1g-dev
+    zlib1g-dev \
+    curl
+    
 WORKDIR /tmp/pmacct/
 # About to deal with deps installation
-COPY ci/deps.sh ci/
+COPY ./pmacct/ci/deps.sh ci/
 # Parallelism: 2 looks a reasonable default, and bear in mind CI specs
 ARG NUM_WORKERS=4
 ENV MAKEFLAGS="-j${NUM_WORKERS}"
 # Do not check certificates in wget for external deps
 ARG DEPS_DONT_CHECK_CERTIFICATE
 RUN ./ci/deps.sh
-# Actual build
-COPY . .
+
+# Install Rust and cargo-c
+WORKDIR /tmp
+RUN apt install -y clang
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain nightly --target nightly --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo install --git https://github.com/mxyns/cargo-c cargo-c
+
+# Assume we have pmacct, netgauze and pmacct-gauze in the caller script working directory
+# You can use mount --bind <> <> to avoid copying the project there
+COPY ./netgauze /tmp/netgauze
+COPY ./pmacct-gauze /tmp/pmacct-gauze
+
+# pmacct headers required for pmacct-gauze
+# pmacct files required for building it
+# install libcdada which is used in pmacct headers to compile pmacct-gauze
+COPY ./pmacct/ /tmp/pmacct
+
+# Manually install libcdada because we want headers to be available
+# for pmacct-gauze too without handling CFLAGS and other crap
+WORKDIR /tmp/pmacct
+RUN make maintainer-clean || true
+WORKDIR /tmp/pmacct/src/external_libs/libcdada
+RUN ./autogen.sh && ./configure && make install
+
+WORKDIR /tmp/pmacct-gauze
+ENV PMACCT_INCLUDE_DIR=/tmp
+RUN cargo cinstall --package pmacct-gauze-lib
+
+WORKDIR /tmp/pmacct
 RUN export AVRO_LIBS="-L/usr/local/avro/lib -lavro" && \
   export AVRO_CFLAGS="-I/usr/local/avro/include" && \
   ./autogen.sh && ./configure --enable-kafka --enable-redis  \
@@ -62,7 +93,7 @@ RUN export AVRO_LIBS="-L/usr/local/avro/lib -lavro" && \
 FROM debian:bullseye-slim as base
 LABEL maintainer "pmacct Docker Doctors <docker-doctors (at) pmacct.net>"
 # We don't want man pages
-COPY ci/dpkg.cfg.d/excludes /etc/dpkg/dpkg.cfg.d/excludes
+COPY ./pmacct/ci/dpkg.cfg.d/excludes /etc/dpkg/dpkg.cfg.d/excludes
 COPY --from=build-stage /usr/local/ /usr/local
 # Runtime deps
 RUN apt-get update && \
