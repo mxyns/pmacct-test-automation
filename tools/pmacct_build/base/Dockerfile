@@ -78,16 +78,25 @@ RUN make maintainer-clean || true
 WORKDIR /tmp/pmacct/src/external_libs/libcdada
 RUN ./autogen.sh && ./configure && make install
 
+# Run a ./configure to generate basic files like pmacct-version.h that
+# are required for pmacct-gauze to work
+WORKDIR /tmp/pmacct
+ENV AVRO_LIBS="-L/usr/local/avro/lib -lavro"
+ENV AVRO_CFLAGS="-I/usr/local/avro/include"
+RUN ./autogen.sh && ./configure --enable-kafka --enable-redis  \
+                              --enable-zmq  --enable-jansson \
+                              --enable-avro --enable-serdes
+
 WORKDIR /tmp/pmacct-gauze
 ENV PMACCT_INCLUDE_DIR=/tmp
-RUN cargo cinstall --package pmacct-gauze-lib
+RUN cargo cinstall --package pmacct-gauze-lib && ldconfig
 
 WORKDIR /tmp/pmacct
-RUN export AVRO_LIBS="-L/usr/local/avro/lib -lavro" && \
-  export AVRO_CFLAGS="-I/usr/local/avro/include" && \
-  ./autogen.sh && ./configure --enable-kafka --enable-redis  \
+RUN ./autogen.sh && ./configure --enable-kafka --enable-redis  \
                               --enable-zmq  --enable-jansson \
-                              --enable-avro --enable-serdes && \
+                              --enable-avro --enable-serdes \
+                              --enable-pmacct-gauze \
+                              --without-external-deps && \
   make install
 
 FROM debian:bullseye-slim as base
